@@ -26,8 +26,8 @@
 
 set -euo pipefail
 
-VERSION="2.0.0"
-PROG="$(basename "$0")"
+VERSION="2.1.0"
+PROG="${0##*/}"
 
 # Overridable for testing / unusual systems
 MDSTAT_FILE="${MDSTAT_FILE:-/proc/mdstat}"
@@ -46,10 +46,9 @@ OPT_WIDE=0
 OPT_SMART=1
 OPT_VIZ=1
 OPT_RAID=1
+OPT_DRY_RUN=0
+OPT_TRACE=0
 
-TMPDIR_SDB=""
-cleanup() { [[ -n "$TMPDIR_SDB" && -d "$TMPDIR_SDB" ]] && rm -rf "$TMPDIR_SDB"; return 0; }
-trap cleanup EXIT
 trap 'exit 130' INT TERM
 
 usage() {
@@ -72,10 +71,15 @@ Options:
       --no-color       Disable ANSI colors (also honoured: NO_COLOR env var)
       --color          Force ANSI colors even when not writing to a terminal
   -j, --json           Print drives and arrays as JSON (implies --no-color)
+  -n, --dry-run        Execute nothing: report detected tools, the backend that
+                       would be tried and every command that would be run
+  -t, --trace          Run normally but log each privileged (sudo/root)
+                       command to stderr before it is executed
   -V, --version        Print version
   -h, --help           Show this help
 
 Examples:
+  $PROG --dry-run             # see what would run, without running it
   $PROG                       # auto-detect everything
   $PROG --bays 15 --cols 5    # HL15: three rows of five
   $PROG --controller 1 --wide # second HBA only, with temperatures
@@ -103,6 +107,8 @@ parse_args() {
             --no-color)      OPT_COLOR="never" ;;
             --color)         OPT_COLOR="always" ;;
             -j|--json)       OPT_JSON=1 ;;
+            -n|--dry-run)    OPT_DRY_RUN=1 ;;
+            -t|--trace)      OPT_TRACE=1 ;;
             -V|--version)    echo "$PROG $VERSION"; exit 0 ;;
             -h|--help)       usage; exit 0 ;;
             *)               usage >&2; die "unknown option '$1'" ;;
@@ -167,7 +173,11 @@ SUDO=()
 setup_sudo() {
     if (( EUID != 0 )) && command -v sudo >/dev/null 2>&1; then SUDO=(sudo); fi
 }
-run_priv() { "${SUDO[@]}" "$@"; }
+run_priv() {
+    # fd 3 = original stderr, so traces survive the 2>/dev/null used by callers
+    (( OPT_TRACE )) && printf '%s: trace: %s\n' "$PROG" "${SUDO[*]}${SUDO[*]:+ }$*" >&3
+    "${SUDO[@]}" "$@"
+}
 
 # ------------------------------------------------------------------------------
 # Global data
@@ -834,13 +844,117 @@ print_json() {
 }
 
 # ------------------------------------------------------------------------------
+# Dry run: executes NOTHING. Only uses `command -v`, file tests, reads
+# $MDSTAT_FILE and lists $SYSFS_ENCLOSURE. Prints what a real run would do.
+# ------------------------------------------------------------------------------
+tool_status() {  # name purpose -> one formatted line; returns 0 if usable
+    local name="$1" purpose="$2" path status rc=1
+    path=$(command -v "$name" 2>/dev/null || true)
+    if [[ -z "$path" ]]; then status="missing"; path="-"
+    elif [[ "$path" == /* && ! -x "$path" ]]; then status="NOT EXECUTABLE"
+    else status="ok"; rc=0
+    fi
+    printf '  %-11s %-15s %-36s %s\n' "$name" "$status" "$path" "$purpose"
+    return $rc
+}
+
+dry_run_report() {
+    local p="${SUDO[*]}${SUDO[*]:+ }" t first="" storcli_tool="" md_list=() n_ses=0
+    echo "$PROG $VERSION — DRY RUN (no commands executed, no files written)"
+    echo
+    echo "Environment"
+    if (( EUID == 0 )); then echo "  Running as root; privileged commands run directly"
+    elif ((${#SUDO[@]})); then echo "  Running as ${USER:-uid $EUID}; privileged commands run via: sudo (may prompt for a password)"
+    else echo "  Running as uid $EUID without sudo; HBA, mdadm and SMART queries will likely fail"
+    fi
+    if [[ -r "$MDSTAT_FILE" ]]; then
+        mapfile -t md_list < <(awk '/^md[^ ]* *:/ {print $1}' "$MDSTAT_FILE" | sort -uV)
+        echo "  $MDSTAT_FILE: ${#md_list[@]} md array(s)${md_list[*]:+: ${md_list[*]}}"
+    else
+        echo "  $MDSTAT_FILE: not readable (no md driver loaded?)"
+    fi
+    local ses_entries=()
+    mapfile -t ses_entries < <(compgen -G "$SYSFS_ENCLOSURE/*" || true)
+    n_ses=${#ses_entries[@]}
+    echo "  $SYSFS_ENCLOSURE: $n_ses SES enclosure(s)"
+    echo
+    echo "Tools"
+    printf '  %-11s %-15s %-36s %s\n' "TOOL" "STATUS" "PATH" "USED FOR"
+    for t in sas3ircu sas2ircu; do
+        if tool_status "$t" "LSI SAS3/SAS2 HBA backend" && [[ -z "$first" ]]; then first="$t"; fi
+    done
+    for t in storcli64 storcli perccli64 perccli; do
+        if tool_status "$t" "MegaRAID / tri-mode HBA backend" && [[ -z "$storcli_tool" ]]; then storcli_tool="$t"; fi
+    done
+    tool_status lsblk    "disk discovery (REQUIRED)" || true
+    tool_status udevadm  "WWN / serial matching"     || true
+    tool_status mdadm    "RAID membership & state"   || true
+    tool_status smartctl "SMART health / temperature" || true
+    tool_status sudo     "privilege escalation"      || true
+    echo
+    echo "Backend selection (--backend $OPT_BACKEND)"
+    case "$OPT_BACKEND" in
+        auto)
+            echo "  Tried in order, first one that reports a controller wins:"
+            echo "    sas3ircu -> sas2ircu -> storcli/perccli -> ses ($n_ses found) -> none"
+            if [[ -n "$first" ]]; then echo "  Would try first: $first"
+            elif [[ -n "$storcli_tool" ]]; then echo "  Would try first: $storcli_tool"
+            elif (( n_ses )); then echo "  Would use: ses (kernel enclosure slots)"
+            else echo "  Would use: none (positional list, no physical bay mapping)"
+            fi ;;
+        storcli) echo "  Forced: storcli via ${storcli_tool:-<not installed: real run would abort>}" ;;
+        *)       echo "  Forced: $OPT_BACKEND" ;;
+    esac
+    echo
+    echo "Commands a real run may execute (all read-only queries; backends stop at the first that finds a controller)"
+    local c="${OPT_CONTROLLER:-<N>}" each=""
+    [[ -n "$OPT_CONTROLLER" ]] || each="   (for each controller)"
+    if [[ "$OPT_BACKEND" =~ ^(auto|sas3ircu|sas2ircu)$ ]]; then
+        for t in sas3ircu sas2ircu; do
+            [[ "$OPT_BACKEND" == auto || "$OPT_BACKEND" == "$t" ]] || continue
+            command -v "$t" >/dev/null 2>&1 || continue
+            echo "  ${p}$t LIST"
+            echo "  ${p}$t $c display$each"
+        done
+    fi
+    if [[ "$OPT_BACKEND" =~ ^(auto|storcli)$ && -n "$storcli_tool" ]]; then
+        echo "  ${p}$storcli_tool show ctrlcount"
+        echo "  ${p}$storcli_tool /c$c/eall show$each"
+        echo "  ${p}$storcli_tool /c$c/eall/sall show all$each"
+        echo "  ${p}$storcli_tool /c$c/sall show all   (only if the previous returns nothing)"
+    fi
+    if [[ "$OPT_BACKEND" =~ ^(auto|ses)$ ]] && (( n_ses )); then
+        echo "  (reads files under $SYSFS_ENCLOSURE — no commands)"
+    fi
+    echo "  lsblk -dnpo NAME,TYPE"
+    command -v udevadm >/dev/null 2>&1 && echo "  udevadm info --query=property --name=<disk>   (for each disk)"
+    echo "  lsblk -dnbo SIZE <disk>                       (for each disk)"
+    if ((${#md_list[@]})) && command -v mdadm >/dev/null 2>&1; then
+        for t in "${md_list[@]}"; do echo "  ${p}mdadm --detail /dev/$t"; done
+        if (( OPT_RAID && ! OPT_JSON )); then
+            echo "  lsblk -nro MOUNTPOINT /dev/<md>; df -hP <mountpoint>   (for each array)"
+        fi
+    fi
+    if (( OPT_SMART )) && command -v smartctl >/dev/null 2>&1; then
+        echo "  ${p}smartctl -H -A <disk>                    (for each bay-matched disk; reads status only, starts no tests)"
+    fi
+    (( OPT_JSON )) && echo "  hostname"
+    echo
+    echo "Nothing is ever written: no files, no temp files, no config, no HBA/RAID/SMART changes."
+    echo "Re-run without --dry-run (optionally with --trace) to perform the queries above."
+    command -v lsblk >/dev/null 2>&1 || { warn "lsblk is missing — a real run would abort"; return 1; }
+    return 0
+}
+
+# ------------------------------------------------------------------------------
 # Main
 # ------------------------------------------------------------------------------
 main() {
+    exec 3>&2
     parse_args "$@"
     setup_colors
     setup_sudo
-    TMPDIR_SDB=$(mktemp -d)
+    if (( OPT_DRY_RUN )); then dry_run_report; return; fi
 
     command -v lsblk >/dev/null 2>&1 || die "lsblk (util-linux) is required"
 

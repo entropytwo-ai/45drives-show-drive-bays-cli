@@ -21,6 +21,11 @@ and even machines with no HBA at all.
   - [Auto layout rules](#auto-layout-rules)
 - [Example output](#example-output)
 - [Bay count reference (45Drives)](#bay-count-reference-45drives)
+- [Is it safe to run?](#is-it-safe-to-run)
+  - [What the script does and does not do](#what-the-script-does-and-does-not-do)
+  - [Step 1: Dry run](#step-1-dry-run)
+  - [Step 2: Trace a real run](#step-2-trace-a-real-run)
+  - [Step 3: Start minimal](#step-3-start-minimal)
 - [Troubleshooting](#troubleshooting)
 - [Testing without hardware](#testing-without-hardware)
 - [License](#license)
@@ -105,6 +110,8 @@ show-drive-bays [options]
       --no-color       Disable ANSI colors (NO_COLOR env var is honoured too)
       --color          Force colors even when piped
   -j, --json           JSON output (drives + arrays)
+  -n, --dry-run        Execute nothing; show detected tools, backend and every command that would run
+  -t, --trace          Run normally, logging each privileged (sudo/root) command to stderr first
   -V, --version        Print version
   -h, --help           Show help
 ```
@@ -203,6 +210,97 @@ Typical bay counts — verify against your exact model/backplane; `--bays` / `--
 
 When drives span several HBAs (common on Storinators) each controller/enclosure gets its own map; slot numbers are
 those reported by the HBA.
+
+## Is it safe to run?
+
+Yes, it is designed to be: **every command it runs is a read-only query**, and it **writes nothing to disk**.
+You don't have to take that on trust, though. Here's how to check before it touches anything.
+
+### What the script does and does not do
+
+| Command (run via `sudo` unless you are root) | Purpose | Changes anything? |
+|---|---|---|
+| `sas3ircu LIST`, `sas3ircu <N> display` (or `sas2ircu`) | List controllers / drives & slots | No, display only |
+| `storcli64 show ctrlcount`, `/cN/eall show`, `/cN/eall/sall show all` (fallback `/cN/sall show all`) | Same, for MegaRAID / tri-mode HBAs | No, `show` only |
+| `mdadm --detail /dev/mdX` | RAID membership and state | No |
+| `smartctl -H -A /dev/sdX` | SMART health + attributes | No, reads status only and starts **no** self-tests |
+| `lsblk`, `udevadm info --query=property`, `df -hP` (unprivileged) | Disk list, WWN/serial, mount usage | No |
+| Reads `/proc/mdstat`, `/sys/class/enclosure` | Array list, kernel slot info | No |
+
+It **never** runs `create`, `delete`, `set`, `start`, `--fail`, `--remove`, `--add`, `smartctl -t`, `-s`, or anything
+that writes to a disk, controller, array or config file. It creates **no temp files**.
+
+You can confirm this yourself: every privileged call goes through one function, `run_priv`:
+
+```bash
+grep -n 'run_priv ' show-drive-bays.sh
+```
+
+### Step 1: Dry run
+
+```bash
+./show-drive-bays.sh --dry-run
+```
+
+`--dry-run` executes **nothing**. It only checks which tools exist on `PATH`, reads `/proc/mdstat` and lists
+`/sys/class/enclosure`. Then it prints:
+
+- who you're running as and whether `sudo` will be used
+- every tool it looks for, with **ok / missing / NOT EXECUTABLE** status and its path
+- which backend it would try first
+- the exact list of commands a real run may execute, with `sudo` prefixes, array names and controller numbers filled in
+
+It honours your other flags, so `--dry-run --controller 1 --no-smart` shows exactly what *that* run would do.
+It exits non-zero if a real run would abort (for example, `lsblk` is missing).
+
+Example (trimmed):
+
+```
+show-drive-bays.sh 2.1.0 — DRY RUN (no commands executed, no files written)
+
+Environment
+  Running as admin; privileged commands run via: sudo (may prompt for a password)
+  /proc/mdstat: 2 md array(s): md0 md1
+  /sys/class/enclosure: 1 SES enclosure(s)
+
+Tools
+  TOOL        STATUS          PATH                                 USED FOR
+  sas3ircu    ok              /usr/local/sbin/sas3ircu             LSI SAS3/SAS2 HBA backend
+  sas2ircu    missing         -                                    LSI SAS3/SAS2 HBA backend
+  ...
+
+Commands a real run may execute (all read-only queries; backends stop at the first that finds a controller)
+  sudo sas3ircu LIST
+  sudo sas3ircu <N> display   (for each controller)
+  lsblk -dnpo NAME,TYPE
+  udevadm info --query=property --name=<disk>   (for each disk)
+  sudo mdadm --detail /dev/md0
+  sudo mdadm --detail /dev/md1
+  sudo smartctl -H -A <disk>                    (for each bay-matched disk; reads status only, starts no tests)
+```
+
+### Step 2: Trace a real run
+
+```bash
+./show-drive-bays.sh --trace
+```
+
+`--trace` runs normally and prints each privileged command to stderr **before** it runs, so you can see exactly
+what was sent to `sudo`. Normal output on stdout is unchanged, so you can split the two:
+
+```bash
+./show-drive-bays.sh --trace 2> trace.log
+```
+
+### Step 3: Start minimal
+
+To keep the first real run as small as possible, turn off the optional parts:
+
+```bash
+./show-drive-bays.sh --no-smart --no-raid --controller 0 --trace
+```
+
+Then add the parts back one at a time. Running it from the cloned repo (rather than installing it) is also fine for a trial.
 
 ## Troubleshooting
 

@@ -3,6 +3,19 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [2.1.0] - 2026-10-28
+
+### Added
+- `-n` / `--dry-run`: executes no commands and writes nothing. It reports the user / sudo context, the status and
+  path of every tool, the backend it would pick, and the exact read-only commands a real run may execute.
+  It honours the other flags and exits non-zero if a real run would abort.
+- `-t` / `--trace`: logs each privileged (sudo/root) command to stderr before running it. Stdout is unchanged.
+- README section "Is it safe to run?" with a table of every command the script runs.
+
+### Changed
+- Removed the unused temp directory, so the script now writes nothing to disk at all.
+- `basename` is no longer needed (uses `${0##*/}`).
+
 ## [2.0.0] - 2026-10-28
 
 First published release — a rewrite of the original single-controller, 8-bay C8 script.
