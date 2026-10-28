@@ -49,6 +49,8 @@ and even machines with no HBA at all.
 - **Disks outside the HBA** (boot SSDs, onboard SATA, NVMe) are listed too, so nothing is missed.
 - **Scriptable** — `--json` output, `--no-color` for logs (colour is also disabled automatically when piped).
 
+<sub>[↑ Back to contents](#table-of-contents)</sub>
+
 ## Supported hardware
 
 | Backend    | Hardware                                                                                   |
@@ -63,6 +65,8 @@ and even machines with no HBA at all.
 **HomeLab HL15 / HL8 / HL4**, **Proxinator** and **C8**. Servers from other vendors work as long as one of the
 backends above is available.
 
+<sub>[↑ Back to contents](#table-of-contents)</sub>
+
 ## Requirements
 
 | Tool                 | Package (Debian/Ubuntu · RHEL/Rocky)   | Required?                                   |
@@ -75,6 +79,8 @@ backends above is available.
 | `smartctl`           | smartmontools                          | optional (health / temperature)             |
 
 The script calls `sudo` for `sas*ircu`, `storcli`, `mdadm` and `smartctl` when not run as root.
+
+<sub>[↑ Back to contents](#table-of-contents)</sub>
 
 ## Installation
 
@@ -92,6 +98,8 @@ PREFIX=/opt ./install.sh     # install to /opt/bin instead
 ```
 
 Or just run it in place: `./show-drive-bays.sh`.
+
+<sub>[↑ Back to contents](#table-of-contents)</sub>
 
 ## Usage
 
@@ -139,6 +147,8 @@ show-drive-bays --json | jq '.arrays[] | select(.state | test("degraded"))'
 
 Use `--cols` to match your chassis exactly. Slots are numbered left-to-right, top-to-bottom starting at the
 enclosure's `StartSlot`.
+
+<sub>[↑ Back to contents](#table-of-contents)</sub>
 
 ## Example output
 
@@ -193,6 +203,8 @@ Bay codes: **R** RAID member (green), **S** hot spare (magenta), **B** rebuildin
 **P** populated but not in RAID (yellow), **.** empty (cyan). In colour mode the letter is replaced by the background
 colour.
 
+<sub>[↑ Back to contents](#table-of-contents)</sub>
+
 ## Bay count reference (45Drives)
 
 Typical bay counts — verify against your exact model/backplane; `--bays` / `--cols` override everything.
@@ -210,6 +222,8 @@ Typical bay counts — verify against your exact model/backplane; `--bays` / `--
 
 When drives span several HBAs (common on Storinators) each controller/enclosure gets its own map; slot numbers are
 those reported by the HBA.
+
+<sub>[↑ Back to contents](#table-of-contents)</sub>
 
 ## Is it safe to run?
 
@@ -302,6 +316,8 @@ To keep the first real run as small as possible, turn off the optional parts:
 
 Then add the parts back one at a time. Running it from the cloned repo (rather than installing it) is also fine for a trial.
 
+<sub>[↑ Back to contents](#table-of-contents)</sub>
+
 ## Troubleshooting
 
 - **Device column shows `-`** — the HBA's WWN/serial didn't match any disk known to udev. Check
@@ -310,11 +326,17 @@ Then add the parts back one at a time. Running it from the cloned repo (rather t
   or load the `ses` kernel module (`modprobe ses`) so `/sys/class/enclosure` is populated.
 - **Wrong bay count** — some HBAs report a virtual enclosure with 8 slots per port; use `--bays`.
 
+<sub>[↑ Back to contents](#table-of-contents)</sub>
+
 ## Testing without hardware
 
 `MDSTAT_FILE` and `SYSFS_ENCLOSURE` environment variables override `/proc/mdstat` and `/sys/class/enclosure`, so
 the script can be exercised with mock `sas3ircu`/`mdadm`/`udevadm`/`lsblk` binaries placed first in `PATH`.
 
+<sub>[↑ Back to contents](#table-of-contents)</sub>
+
 ## License
 
 See [LICENSE](LICENSE).
+
+<sub>[↑ Back to contents](#table-of-contents)</sub>
