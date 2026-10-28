@@ -10,6 +10,23 @@ and even machines with no HBA at all.
 
 ---
 
+## Table of Contents
+
+- [Features](#features)
+- [Supported hardware](#supported-hardware)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Examples](#examples)
+  - [Auto layout rules](#auto-layout-rules)
+- [Example output](#example-output)
+- [Bay count reference (45Drives)](#bay-count-reference-45drives)
+- [Troubleshooting](#troubleshooting)
+- [Testing without hardware](#testing-without-hardware)
+- [License](#license)
+
+---
+
 ## Features
 
 - **Auto-detects the storage backend** — `sas3ircu` → `sas2ircu` → `storcli`/`storcli64` → kernel SES
